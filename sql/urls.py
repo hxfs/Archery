@@ -1,5 +1,6 @@
 # -*- coding: UTF-8 -*-
 
+from sql.views import instance_param
 from django.urls import path
 from django.views.i18n import JavaScriptCatalog
 
@@ -101,6 +102,7 @@ urlpatterns = [
 
     path('instance/schemasync/', instance.schemasync),
     path('instance/instance_resource/', instance.instance_resource),
+    path('instance/database_resource/', instance.database_resource),
     path('instance/describetable/', instance.describe),
 
     path('data_dictionary/', views.data_dictionary),

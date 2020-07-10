@@ -1,5 +1,7 @@
 # -*- coding: UTF-8 -*-
+from logging import fatal
 import os
+import datetime
 import time
 
 import simplejson as json
@@ -12,7 +14,7 @@ from common.config import SysConfig
 from common.utils.extend_json_encoder import ExtendJSONEncoder
 from sql.engines import get_engine
 from sql.plugins.schemasync import SchemaSync
-from .models import Instance, ParamTemplate, ParamHistory
+from .models import Instance, ParamTemplate, ParamHistory, QueryPrivileges
 
 
 @permission_required('sql.menu_instance_list', raise_exception=True)
@@ -42,10 +44,12 @@ def lists(request):
     # 过滤标签，返回同时包含全部标签的实例，TODO 循环会生成多表JOIN，如果数据量大会存在效率问题
     if tags:
         for tag in tags:
-            instances = instances.filter(instance_tag=tag, instance_tag__active=True)
+            instances = instances.filter(
+                instance_tag=tag, instance_tag__active=True)
 
     count = instances.count()
-    instances = instances[offset:limit].values("id", "instance_name", "db_type", "type", "host", "port", "user")
+    instances = instances[offset:limit].values(
+        "id", "instance_name", "db_type", "type", "host", "port", "user")
     # QuerySet 序列化
     rows = [row for row in instances]
 
@@ -146,7 +150,8 @@ def param_edit(request):
     if variable_value == runtime_value:
         result = {'status': 1, 'msg': '参数值与实际运行值一致，未调整！', 'data': []}
         return HttpResponse(json.dumps(result), content_type='application/json')
-    set_result = engine.set_variable(variable_name=variable_name, variable_value=variable_value)
+    set_result = engine.set_variable(
+        variable_name=variable_name, variable_value=variable_value)
     if set_result.error:
         result = {'status': 1, 'msg': f'设置错误，错误信息：{set_result.error}', 'data': []}
         return HttpResponse(json.dumps(result), content_type='application/json')
@@ -172,9 +177,12 @@ def schemasync(request):
     db_name = request.POST.get('db_name')
     target_instance_name = request.POST.get('target_instance_name')
     target_db_name = request.POST.get('target_db_name')
-    sync_auto_inc = True if request.POST.get('sync_auto_inc') == 'true' else False
-    sync_comments = True if request.POST.get('sync_comments') == 'true' else False
-    result = {'status': 0, 'msg': 'ok', 'data': {'diff_stdout': '', 'patch_stdout': '', 'revert_stdout': ''}}
+    sync_auto_inc = True if request.POST.get(
+        'sync_auto_inc') == 'true' else False
+    sync_comments = True if request.POST.get(
+        'sync_comments') == 'true' else False
+    result = {'status': 0, 'msg': 'ok', 'data': {
+        'diff_stdout': '', 'patch_stdout': '', 'revert_stdout': ''}}
 
     # 循环对比全部数据库
     if db_name == 'all' or target_db_name == 'all':
@@ -183,7 +191,8 @@ def schemasync(request):
 
     # 取出该实例的连接方式
     instance_info = Instance.objects.get(instance_name=instance_name)
-    target_instance_info = Instance.objects.get(instance_name=target_instance_name)
+    target_instance_info = Instance.objects.get(
+        instance_name=target_instance_name)
 
     # 提交给SchemaSync获取对比结果
     schema_sync = SchemaSync()
@@ -215,7 +224,8 @@ def schemasync(request):
     cmd_args = schema_sync.generate_args2cmd(args, shell=True)
     # 执行命令
     try:
-        stdout, stderr = schema_sync.execute_cmd(cmd_args, shell=True).communicate()
+        stdout, stderr = schema_sync.execute_cmd(
+            cmd_args, shell=True).communicate()
         diff_stdout = f'{stdout}{stderr}'
     except RuntimeError as e:
         diff_stdout = str(e)
@@ -223,8 +233,10 @@ def schemasync(request):
     # 非全部数据库对比可以读取对比结果并在前端展示
     if db_name != '*':
         date = time.strftime("%Y%m%d", time.localtime())
-        patch_sql_file = '%s%s_%s.%s.patch.sql' % (output_directory, target_db_name, tag, date)
-        revert_sql_file = '%s%s_%s.%s.revert.sql' % (output_directory, target_db_name, tag, date)
+        patch_sql_file = '%s%s_%s.%s.patch.sql' % (
+            output_directory, target_db_name, tag, date)
+        revert_sql_file = '%s%s_%s.%s.revert.sql' % (
+            output_directory, target_db_name, tag, date)
         try:
             with open(patch_sql_file, 'r') as f:
                 patch_sql = f.read()
@@ -235,12 +247,103 @@ def schemasync(request):
                 revert_sql = f.read()
         except FileNotFoundError as e:
             revert_sql = str(e)
-        result['data'] = {'diff_stdout': diff_stdout, 'patch_stdout': patch_sql, 'revert_stdout': revert_sql}
+        result['data'] = {'diff_stdout': diff_stdout,
+                          'patch_stdout': patch_sql, 'revert_stdout': revert_sql}
     else:
-        result['data'] = {'diff_stdout': diff_stdout, 'patch_stdout': '', 'revert_stdout': ''}
+        result['data'] = {'diff_stdout': diff_stdout,
+                          'patch_stdout': '', 'revert_stdout': ''}
 
     return HttpResponse(json.dumps(result), content_type='application/json')
 
+
+def database_resource(request):
+    """
+    online serach
+    """
+    resource_type = request.GET.get('resource_type')
+    instance_id = request.GET.get('instance_id')
+    instance_name = request.GET.get('instance_name')
+    db_name = request.GET.get('db_name')
+    schema_name = request.GET.get('schema_name')
+    tb_name = request.GET.get('tb_name')
+    user = request.user
+    if instance_id:
+        instance = Instance.objects.get(id=instance_id)
+    else:
+        try:
+            instance = Instance.objects.get(instance_name=instance_name)
+        except Instance.DoesNotExist:
+            result = {'status': 1, 'msg': '实例不存在', 'data': []}
+            return HttpResponse(json.dumps(result), content_type='application/json')
+    result = {'status': 0, 'msg': 'ok', 'data': []}
+    query_engine = get_engine(instance=instance)
+    if user.is_superuser:
+        try:
+            if resource_type == 'database':
+                resource = query_engine.get_all_databases()
+                print(resource.rows)
+            elif resource_type == 'schema' and db_name:
+                resource = query_engine.get_all_schemas(db_name=db_name)
+            elif resource_type == 'table' and db_name:
+                resource = query_engine.get_all_tables(
+                    db_name=db_name, schema_name=schema_name)
+            elif resource_type == 'column' and db_name and tb_name:
+                resource = query_engine.get_all_columns_by_tb(
+                    db_name=db_name, tb_name=tb_name, schema_name=schema_name)
+            else:
+                raise TypeError('不支持的资源类型或者参数不完整！')
+        except Exception as msg:
+            result['status'] = 1
+            result['msg'] = str(msg)
+        else:
+            if resource.error:
+                result['status'] = 1
+                result['msg'] = resource.error
+            else:
+                result['data'] = resource.rows
+    else:
+        try:
+            dbs = QueryPrivileges.objects.filter(
+                    user_name=user.username, instance=instance)
+            today = datetime.date.today()
+            if resource_type == 'database':
+                database = []
+                for db in dbs.all():
+                    if not db.is_deleted and  valid_perms_data(today, db.valid_date):
+                        database.append(db.db_name)
+                result['data'] = list(set(database))
+            elif resource_type == 'schema' and db_name:
+                schema = query_engine.get_all_schemas(db_name=db_name)
+                result['data'] = schema.rows
+
+            elif resource_type == 'table' and db_name:
+                table_name = []
+                for db in dbs.all():
+                    if not db.is_deleted and valid_perms_data(today, db.valid_date):
+                        if db.priv_type == 2:
+                            table_name.append(db.table_name)
+                        else:
+                            tb_names = query_engine.get_all_tables(db_name=db_name)
+                            table_name.extend(tb_names.rows)
+                result['data'] = list(set(table_name))
+            else:
+                raise TypeError('不支持的资源类型或者参数不完整！')
+                
+        except Exception as msg:
+            print(msg)
+            result['status'] = 1
+            result['msg'] = msg
+            result['data'] = []
+
+
+    
+    return HttpResponse(json.dumps(result), content_type='application/json')
+
+def valid_perms_data(today, valid_data):
+    valid_datatime = valid_data - today
+    if valid_datatime.days >= 0:
+        return True
+    return fatal
 
 @cache_page(60 * 5, key_prefix="insRes")
 def instance_resource(request):
@@ -273,9 +376,11 @@ def instance_resource(request):
         elif resource_type == 'schema' and db_name:
             resource = query_engine.get_all_schemas(db_name=db_name)
         elif resource_type == 'table' and db_name:
-            resource = query_engine.get_all_tables(db_name=db_name, schema_name=schema_name)
+            resource = query_engine.get_all_tables(
+                db_name=db_name, schema_name=schema_name)
         elif resource_type == 'column' and db_name and tb_name:
-            resource = query_engine.get_all_columns_by_tb(db_name=db_name, tb_name=tb_name, schema_name=schema_name)
+            resource = query_engine.get_all_columns_by_tb(
+                db_name=db_name, tb_name=tb_name, schema_name=schema_name)
         else:
             raise TypeError('不支持的资源类型或者参数不完整！')
     except Exception as msg:
@@ -305,7 +410,8 @@ def describe(request):
 
     try:
         query_engine = get_engine(instance=instance)
-        query_result = query_engine.describe_table(db_name, tb_name, schema_name=schema_name)
+        query_result = query_engine.describe_table(
+            db_name, tb_name, schema_name=schema_name)
         result['data'] = query_result.__dict__
     except Exception as msg:
         result['status'] = 1
